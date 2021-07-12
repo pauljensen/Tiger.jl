@@ -1,0 +1,68 @@
+
+media = "CDM"
+description = "Chemically Defined Media"
+
+default_exchange_bounds = [-1000.0, 0.0]
+exchange_pattern = "_exch"
+
+[reactions]
+# Glucose
+glc_exch = [-1000.0, 10.0]
+
+# Amino Acids
+ala_exch = [-1000.0, 100.0]
+arg_exch = [-1000.0, 100.0]
+asp_exch = [-1000.0, 100.0]
+asn_exch = [-1000.0, 100.0]
+cys_exch = [-1000.0, 100.0]
+glu_exch = [-1000.0, 100.0]
+gln_exch = [-1000.0, 100.0]
+gly_exch = [-1000.0, 100.0]
+his_exch = [-1000.0, 100.0]
+ile_exch = [-1000.0, 100.0]
+leu_exch = [-1000.0, 100.0]
+lys_exch = [-1000.0, 100.0]
+met_exch = [-1000.0, 100.0]
+phe_exch = [-1000.0, 100.0]
+pro_exch = [-1000.0, 100.0]
+ser_exch = [-1000.0, 100.0]
+thr_exch = [-1000.0, 100.0]
+trp_exch = [-1000.0, 100.0]
+tyr_exch = [-1000.0, 100.0]
+val_exch = [-1000.0, 100.0]
+
+# Nucleobases
+ade_exch = [-1000.0, 100.0]
+gua_exch = [-1000.0, 100.0]
+ura_exch = [-1000.0, 100.0]
+
+# Vitamins and Cofactors
+4abz_exch   = [-1000.0, 100.0]
+btn_exch    = [-1000.0, 100.0]
+fol_exch    = [-1000.0, 100.0]
+ncam_exch   = [-1000.0, 100.0]
+NADP_exch   = [-1000.0, 100.0]
+pnto_exch   = [-1000.0, 100.0]
+pydx_exch   = [-1000.0, 100.0]
+pydam_exch  = [-1000.0, 100.0]
+pydxn_exch  = [-1000.0, 100.0]
+ribflv_exch = [-1000.0, 100.0]
+thm_exch    = [-1000.0, 100.0]
+
+# Salts and Inorganics
+Fe2_exch   = [-1000.0, 1000.0]
+Mg2_exch   = [-1000.0, 1000.0]
+Mn2_exch   = [-1000.0, 1000.0]
+Na_exch    = [-1000.0, 1000.0]
+pi_exch    = [-1000.0, 1000.0]
+NO3_exch   = [-1000.0, 1000.0]
+SO4_exch   = [-1000.0, 1000.0]
+H2CO3_exch = [-1000.0, 1000.0]
+
+# Excess
+H2O_exch = [-1000.0, 1000.0]
+CO2_exch = [-1000.0, 1000.0]
+O2_exch  = [-1000.0, 1000.0]
+O2s_exch = [-1000.0, 1000.0]
+H_exch   = [-1000.0, 1000.0]
+NH4_exch = [-1000.0, 1000.0]

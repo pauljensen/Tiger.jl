@@ -1,13 +1,24 @@
 
 module Tiger
 
-import Base.print
+import Base: print, isempty, convert, Iterators.flatten, Iterators.enumerate
 import MAT.matread
 using SparseArrays
 using JuMP, Gurobi
+using TOML
+
+export parse_boolean,
+       parse_gpr_string,
+       read_cobra,
+       build_base_model,
+       set_media_bounds!,
+       add_gprs_cnf!,
+       single_deletions
 
 abstract type Boolean end
 abstract type Junction <: Boolean end
+
+struct Empty <: Boolean end
 
 struct Atom <: Boolean
     name::String
@@ -22,6 +33,11 @@ struct Or <: Junction
     left::Boolean
     right::Boolean
 end
+
+isempty(x::Empty) = true
+isempty(x::Boolean) = false
+
+convert(::Type{String}, a::Atom) = a.name
 
 function print(x::Boolean)
     indent_step = "   "
@@ -50,14 +66,17 @@ function substitute_op(e)
         for i = 2:length(e.args)
             e.args[i] = substitute_op(e.args[i])
         end
-    elseif isa(e, Symbol)
+    elseif isa(e, Symbol) || isa(e, String)
         e = Atom(String(e))
     end
 
     return e
 end
 
-function parse_boolean(s)
+function parse_boolean(s::AbstractString)
+    if isempty(s)
+        return Empty()
+    end
     ex = Meta.parse(s)
     return eval(substitute_op(ex))
 end
@@ -120,6 +139,7 @@ swap_andor(b::Or) = And(swap_andor(b.left), swap_andor(b.right))
 
 cnf(b::Boolean) = b |> swap_andor |> dnf |> swap_andor
 
+atoms(e::Empty) = []
 atoms(a::Atom) = [a]
 atoms(b::Boolean) = unique([atoms(b.left); atoms(b.right)])
 
@@ -145,6 +165,16 @@ cnf_groups(b::Boolean) = b |> swap_andor |> dnf_groups
 
 # =================== Cobra Stuff ===================
 
+function parse_gpr_string(s; and_str="and", or_str="or")
+    if and_str != "&"
+        s = replace(s, and_str => "&")
+    end
+    if or_str != "|"
+        s = replace(s, or_str => "|")
+    end
+    parse_boolean(s)
+end
+
 struct CobraModel 
     description::String
 
@@ -162,11 +192,14 @@ struct CobraModel
     rxnNames::Vector{String}
 
     grRules::Vector{String}
+    gprs::Vector{Boolean}
     genes::Vector{String}
 end
 
 function read_cobra(matfile, name)
     vars = matread(matfile)[name]
+    gprs = parse_gpr_string.(vars["grRules"][:])
+    genes = unique(flatten(atoms.(gprs)))
     CobraModel(
         vars["description"],
 
@@ -184,7 +217,8 @@ function read_cobra(matfile, name)
         vars["rxnNames"][:],
 
         vars["grRules"][:],
-        vars["genes"][:]
+        gprs,
+        genes
     )
 end
 
@@ -192,24 +226,117 @@ function build_base_model(cobra::CobraModel, optimizer=Gurobi.Optimizer)
     model = Model(optimizer)
 
     nr = length(cobra.lb)
+
     @variable(model, cobra.lb[i] <= v[i = 1:nr] <= cobra.ub[i])
+    for (i, var) in enumerate(all_variables(model))
+        set_name(var, cobra.rxns[i])
+    end
+
     @constraint(model, cobra.S * v .== cobra.b)
     @objective(model, Max, cobra.c' * v)
 
     return model
 end
 
-function add_gprs_cnf!(model, cobra::CobraModel)
+function add_gprs_cnf!(model::Model, cobra::CobraModel)
     gene_ub = 1e10
 
-    # add gene variables to model
+    ng = length(cobra.genes)
+    for gene in cobra.genes
+        @variable(model, base_name=gene, lower_bound=0.0)
+    end
 
-    for i = 1:length(cobra.rxns)
-        if isempty(cobra.grRules[i])
-            continue
+    for (i, rxn) in enumerate(cobra.rxns)
+        flux = variable_by_name(model, rxn)
+        rule = cobra.gprs[i]
+        if isempty(rule) continue end
+        groups = cnf_groups(rule)
+        for group in groups
+            activities = variable_by_name.(model, group)
+            @constraint(model, flux <= sum(activities))
+            @constraint(model, flux >= -sum(activities))
         end
-        1
     end
 end
+
+function read_media_file(mediafile::String)
+    return TOML.parsefile(mediafile)
+end
+
+function set_media_bounds!(model::Model, media::Dict{String, Any}; set_defaults=true)
+    if set_defaults
+        varnames = all_variables(model) .|> JuMP.name
+        for nm in varnames
+            if occursin(media["exchange_pattern"], nm)
+                var = variable_by_name(model, nm)
+                set_lower_bound(var, media["default_exchange_bounds"][1])
+                set_upper_bound(var, media["default_exchange_bounds"][2])
+            end
+        end
+    end
+
+    bounds = media["reactions"]
+    for nm in keys(bounds)
+        var = variable_by_name(model, nm)
+        set_lower_bound(var, bounds[nm][1])
+        set_upper_bound(var, bounds[nm][2])
+    end
+end
+
+function set_media_bounds!(model::Model, filename::AbstractString; set_defaults=true)
+    set_media_bounds!(model, read_media_file(filename); set_defaults)
+end
+
+struct Bounds
+    lb::Union{Nothing,Float64}
+    ub::Union{Nothing,Float64}
+end
+
+function save_bounds(var)
+    Bounds(
+        has_lower_bound(var) ? lower_bound(var) : nothing,
+        has_upper_bound(var) ? upper_bound(var) : nothing
+    )
+end
+
+function restore_bounds!(var, bounds)
+    if isnothing(bounds.lb) && has_lower_bound(var)
+        delete_lower_bound(var)
+    else
+        set_lower_bound(var, bounds.lb)
+    end
+
+    if isnothing(bounds.ub) && has_upper_bound(var)
+        delete_upper_bound(var)
+    else
+        set_upper_bound(var, bounds.ub)
+    end
+end
+
+"""
+    single_deletions(model::Model, vars=all_variables(model))
+
+Solve the model when each variable is constrainted to zero.
+
+Returns vectors with the objective values for each deletion and the solver status.
+"""
+function single_deletions(model::Model, vars=all_variables(model))
+    n = length(vars)
+    objval = zeros(n)
+    status = Array{Any}(undef, n)
+
+    for (i, var) in enumerate(vars)
+        prev_bounds = save_bounds(var)
+        set_lower_bound(var, 0.0)
+        set_upper_bound(var, 0.0)
+        optimize!(model)
+        objval[i] = objective_value(model)
+        status[i] = termination_status(model)
+        restore_bounds!(var, prev_bounds)
+    end
+
+    return objval, status
+end
+
 
 end  # module
