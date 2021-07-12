@@ -11,6 +11,7 @@ export parse_boolean,
        parse_gpr_string,
        read_cobra,
        build_base_model,
+       read_media_file,
        set_media_bounds!,
        add_gprs_cnf!,
        single_deletions
@@ -196,7 +197,14 @@ struct CobraModel
     genes::Vector{String}
 end
 
-function read_cobra(matfile, name)
+"""
+    read_cobra(matfile::AbstractString, name::AbstractString)
+
+Read a Cobra model from a Matlab .mat file.
+
+`name` is the variable name in the MAT file containing the model structure.
+"""
+function read_cobra(matfile::AbstractString, name::AbstractString)
     vars = matread(matfile)[name]
     gprs = parse_gpr_string.(vars["grRules"][:])
     genes = unique(flatten(atoms.(gprs)))
@@ -222,6 +230,17 @@ function read_cobra(matfile, name)
     )
 end
 
+"""
+    build_base_model(cobra::CobraModel, optimizer=Gurobi.Optimizer)
+
+Convert a CobraModel object into a JuMP model.
+
+Adds variables for each reaction and defines the problem
+    max c'*v
+    s.t.
+        S*v = b
+        lb <= v <= ub
+"""
 function build_base_model(cobra::CobraModel, optimizer=Gurobi.Optimizer)
     model = Model(optimizer)
 
@@ -238,6 +257,21 @@ function build_base_model(cobra::CobraModel, optimizer=Gurobi.Optimizer)
     return model
 end
 
+"""
+    add_gprs_cnf!(model::Model, cobra::CobraModel)
+
+Add GPRs to a JuMP model using a CNF encoding.
+
+Adds a continuous, nonnegative variable for each gene and constraints
+to enforce the GPR rules. Variables are named based on the strings in 
+`cobra.genes`.
+
+Setting a gene variable to zero is analogous to a gene knockout; otherwise
+the value of each gene corresponds to the magnitude of the flux through the
+the associated reactions. Note that the GPR logic is encoded. If two enzymes
+can catalyze a reaction, the sum of the corresponding gene variables will 
+equal the reaction flux.
+"""
 function add_gprs_cnf!(model::Model, cobra::CobraModel)
     gene_ub = 1e10
 
@@ -283,6 +317,15 @@ function set_media_bounds!(model::Model, media::Dict{String, Any}; set_defaults=
     end
 end
 
+"""
+    set_media_bounds!(model::Model, filename::AbstractString; set_defaults=true)
+
+Set exchange bounds using values in a TOML file.
+
+See `./test/SampleMedia.toml` for a description of the media file format.
+The media file can also be read using `read_media_file`. The resulting Dict
+can be passed instead of the filename.
+"""
 function set_media_bounds!(model::Model, filename::AbstractString; set_defaults=true)
     set_media_bounds!(model, read_media_file(filename); set_defaults)
 end
@@ -292,14 +335,25 @@ struct Bounds
     ub::Union{Nothing,Float64}
 end
 
-function save_bounds(var)
+"""
+    save_bounds(var::VariableRef)
+
+Create a Bounds object with `var`'s current bounds. The a bound is `nothing` if no bound is set.
+"""
+function save_bounds(var::VariableRef)
     Bounds(
         has_lower_bound(var) ? lower_bound(var) : nothing,
         has_upper_bound(var) ? upper_bound(var) : nothing
     )
 end
 
-function restore_bounds!(var, bounds)
+
+"""
+    restore_bounds!(var::VariableRef, bounds::Bounds)
+
+Set the bounds of a JuMP variable. If either bound is `nothing`, the current bound is deleted.
+"""
+function restore_bounds!(var::VariableRef, bounds::Bounds)
     if isnothing(bounds.lb) && has_lower_bound(var)
         delete_lower_bound(var)
     else

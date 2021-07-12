@@ -1,0 +1,38 @@
+# SampleMedia.toml 
+#   A sample file describing the media TOML format for Cobra models.
+
+# name of the media
+meda = "TestMedia"
+
+# longer description
+description = "A test media to showcase the TOML file format."
+
+# When `set_media_bounds!(...; set_defaults=true)`, any reaction id that
+# matches `exchange_pattern` will be set to bounds `default_exchange_bounds`.
+# Both of the following fields are optional if `set_defaults=false`.
+default_exchange_bounds = [-1000.0, 0.0]
+exchange_pattern = "_exch"
+
+# This section starts the reaction bounds. These bounds are applied after the
+# default bounds are applied and will override them.
+[reactions]
+ala_exch = [-1000.0, 100.0]
+arg_exch = [-1000.0, 100.0]
+asp_exch = [-1000.0, 100.0]
+asn_exch = [-1000.0, 100.0]
+cys_exch = [-1000.0, 100.0]
+glu_exch = [-1000.0, 100.0]
+gln_exch = [-1000.0, 100.0]
+gly_exch = [-1000.0, 100.0]
+his_exch = [-1000.0, 100.0]
+ile_exch = [-1000.0, 100.0]
+leu_exch = [-1000.0, 100.0]
+lys_exch = [-1000.0, 100.0]
+met_exch = [-1000.0, 100.0]
+phe_exch = [-1000.0, 100.0]
+pro_exch = [-1000.0, 100.0]
+ser_exch = [-1000.0, 100.0]
+thr_exch = [-1000.0, 100.0]
+trp_exch = [-1000.0, 100.0]
+tyr_exch = [-1000.0, 100.0]
+val_exch = [-1000.0, 100.0]
