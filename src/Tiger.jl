@@ -158,7 +158,9 @@ dnf_groups(b::Boolean) = begin
         push!(groups, names(current.right))
         current = current.left
     end
-    push!(groups, names(current))
+    if !isempty(current)
+        push!(groups, names(current))
+    end
     return groups
 end
 
@@ -180,10 +182,11 @@ struct CobraModel
     description::String
 
     c::Vector{Real}
-    S::SparseMatrixCSC{Real,Integer}
+    S::SparseMatrixCSC{Float64,Int}
     b::Vector{Real}
     lb::Vector{Real}
     ub::Vector{Real}
+    csense::Vector{Char}
 
     rev::Vector{Bool}
 
@@ -216,6 +219,7 @@ function read_cobra(matfile::AbstractString, name::AbstractString)
         vars["b"][:],
         vars["lb"][:],
         vars["ub"][:],
+        repeat(['='], length(cars["b"])),
 
         vars["rev"][:],
 
@@ -227,6 +231,54 @@ function read_cobra(matfile::AbstractString, name::AbstractString)
         vars["grRules"][:],
         gprs,
         genes
+    )
+end
+
+"""
+    expand_cobra(cobra, ncons=0, nvars=0)
+
+Add `ncons` constraints and `nvars` variables to a Cobra model.
+
+Only the fields c, S, b, lb, ub, and csense are extended. If a variable is added,
+all entries are zero. If a constraint is added, it take the form `0=0`.
+"""
+function expand_cobra(cobra, ncons=0, nvars=0)
+    m, n = size(cobra.S)
+
+    c = zeros(n+nvars)
+    c[1:n] = cobra.c
+
+    S = spzeros(m+ncons, n+nvars)
+    S[1:m,1:n] = cobra.S
+
+    b = zeros(m+ncons)
+    b[1:m] = cobra.b
+
+    lb = zeros(n+nvars)
+    lb[1:n] = cobra.lb
+
+    ub = zeros(n+nvars)
+    ub[1:n] = cobra.ub
+
+    csense = repeat(['='], m+ncons)
+    csense[1:m] = cobra.csense
+
+    CobraModel(
+        cobra.description,
+        c,
+        S,
+        b,
+        lb,
+        ub,
+        csense,
+        cobra.rev,
+        cobra.mets,
+        cobra.metNames,
+        cobra.rxns,
+        cobra.rxnNames,
+        cobra.grRules,
+        cobra.gprs,
+        cobra.genes
     )
 end
 
@@ -273,8 +325,6 @@ can catalyze a reaction, the sum of the corresponding gene variables will
 equal the reaction flux.
 """
 function add_gprs_cnf!(model::Model, cobra::CobraModel)
-    gene_ub = 1e10
-
     ng = length(cobra.genes)
     for gene in cobra.genes
         @variable(model, base_name=gene, lower_bound=0.0)
@@ -292,6 +342,27 @@ function add_gprs_cnf!(model::Model, cobra::CobraModel)
         end
     end
 end
+
+function extend_cobra_cnf(cobra::CobraModel, gene_ub=1e10)
+    ng = length(cobra.genes)
+    m, n = size(cobra.S)
+    groups = cnf_groups.(cobra.gprs)
+    ncons = 2(sum(length.(groups)))
+
+    S = spzeros(m+ncons, n+ng)
+    S[1:m,1:n] = cobra.S
+    b = zeros(m+ncons)
+    b[1:m] = cobra.b
+
+
+    gene_index(g) = findfirst(x -> x==g, cobra.genes)
+    for i = 1:n
+        if isempty(groups[i]) continue end
+        for group in groups
+            gidxs = gene_index.(group)
+
+end
+
 
 function read_media_file(mediafile::String)
     return TOML.parsefile(mediafile)
