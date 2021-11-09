@@ -14,7 +14,8 @@ export parse_boolean,
        read_media_file,
        set_media_bounds!,
        add_gprs_cnf!,
-       single_deletions
+       single_deletions,
+       extend_cobra_cnf
 
 abstract type Boolean end
 abstract type Junction <: Boolean end
@@ -195,6 +196,8 @@ struct CobraModel
     rxns::Vector{String}
     rxnNames::Vector{String}
 
+    vars::Vector{String}
+
     grRules::Vector{String}
     gprs::Vector{Boolean}
     genes::Vector{String}
@@ -219,7 +222,7 @@ function read_cobra(matfile::AbstractString, name::AbstractString)
         vars["b"][:],
         vars["lb"][:],
         vars["ub"][:],
-        repeat(['='], length(cars["b"])),
+        repeat(['='], length(vars["b"])),
 
         vars["rev"][:],
 
@@ -227,6 +230,7 @@ function read_cobra(matfile::AbstractString, name::AbstractString)
         vars["metNames"][:],
         vars["rxns"][:],
         vars["rxnNames"][:],
+        vars["rxns"][:],
 
         vars["grRules"][:],
         gprs,
@@ -242,7 +246,7 @@ Add `ncons` constraints and `nvars` variables to a Cobra model.
 Only the fields c, S, b, lb, ub, and csense are extended. If a variable is added,
 all entries are zero. If a constraint is added, it take the form `0=0`.
 """
-function expand_cobra(cobra, ncons=0, nvars=0)
+function expand_cobra(cobra; ncons=0, nvars=0, vars=nothing)
     m, n = size(cobra.S)
 
     c = zeros(n+nvars)
@@ -263,6 +267,12 @@ function expand_cobra(cobra, ncons=0, nvars=0)
     csense = repeat(['='], m+ncons)
     csense[1:m] = cobra.csense
 
+    vars_ = repeat([""], n+nvars)
+    vars_[1:n] = cobra.vars
+    if !isnothing(vars)
+        vars_[n+1:end] = vars
+    end
+
     CobraModel(
         cobra.description,
         c,
@@ -276,6 +286,7 @@ function expand_cobra(cobra, ncons=0, nvars=0)
         cobra.metNames,
         cobra.rxns,
         cobra.rxnNames,
+        vars_,
         cobra.grRules,
         cobra.gprs,
         cobra.genes
@@ -290,20 +301,34 @@ Convert a CobraModel object into a JuMP model.
 Adds variables for each reaction and defines the problem
     max c'*v
     s.t.
-        S*v = b
+        S*v <|=|> b
         lb <= v <= ub
 """
 function build_base_model(cobra::CobraModel, optimizer=Gurobi.Optimizer)
     model = Model(optimizer)
 
-    nr = length(cobra.lb)
+    nv = length(cobra.lb)
 
-    @variable(model, cobra.lb[i] <= v[i = 1:nr] <= cobra.ub[i])
+    @variable(model, cobra.lb[i] <= v[i = 1:nv] <= cobra.ub[i])
     for (i, var) in enumerate(all_variables(model))
-        set_name(var, cobra.rxns[i])
+        set_name(var, cobra.vars[i])
     end
 
-    @constraint(model, cobra.S * v .== cobra.b)
+    sense = cobra.csense .== '<'
+    if any(sense)
+        @constraint(model, cobra.S[sense,:]*v .<= cobra.b[sense])
+    end
+
+    sense = cobra.csense .== '='
+    if any(sense)
+        @constraint(model, cobra.S[sense,:]*v .== cobra.b[sense])
+    end
+
+    sense = cobra.csense .== '>'
+    if any(sense)
+        @constraint(model, cobra.S[sense,:]*v .>= cobra.b[sense])
+    end
+
     @objective(model, Max, cobra.c' * v)
 
     return model
@@ -343,24 +368,36 @@ function add_gprs_cnf!(model::Model, cobra::CobraModel)
     end
 end
 
-function extend_cobra_cnf(cobra::CobraModel, gene_ub=1e10)
+function extend_cobra_cnf(cobra::CobraModel; ub=Inf)
     ng = length(cobra.genes)
     m, n = size(cobra.S)
     groups = cnf_groups.(cobra.gprs)
     ncons = 2(sum(length.(groups)))
 
-    S = spzeros(m+ncons, n+ng)
-    S[1:m,1:n] = cobra.S
-    b = zeros(m+ncons)
-    b[1:m] = cobra.b
+    cobra = expand_cobra(cobra; ncons, nvars=ng, vars=cobra.genes)
+    cobra.ub[n+1:end] .= ub
 
-
-    gene_index(g) = findfirst(x -> x==g, cobra.genes)
+    gene_index(g) = findfirst(x -> x==g, cobra.vars)
+    current = m
     for i = 1:n
         if isempty(groups[i]) continue end
-        for group in groups
+        for group in groups[i]
             gidxs = gene_index.(group)
+            current += 1
+            cobra.S[current,i] = 1
+            cobra.S[current,gidxs] .= -1
+            cobra.csense[current] = '<'
+            cobra.b[current] = 0
 
+            current += 1
+            cobra.S[current,i] = 1
+            cobra.S[current,gidxs] .= 1
+            cobra.csense[current] = '>'
+            cobra.b[current] = 0
+        end
+    end
+
+    return cobra
 end
 
 
