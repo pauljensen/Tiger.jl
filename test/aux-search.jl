@@ -13,14 +13,14 @@ optimize!(model)
 fitness = single_deletions(model, variable_by_name.(model, cobra.genes))
 
 function get_exchange_rxns(cobra::Tiger.CobraModel)
-    cobra.rxns[(sum(abs.(cobra.S),dims=1)  .== 1)[:]]
+    cobra.rxns[(sum(abs.(cobra.S[:,1:length(cobra.rxns)]),dims=1)  .== 1)[:]]
 end
 
 indicator_name(varname) = "I__" * varname
 function add_indicator(model::Model, var::VariableRef)
     ind = @variable(model, base_name=indicator_name(name(var)), binary=true)
     @constraint(model, ind => {var == 0.0})
-    ind
+    return ind
 end
 
 function add_indicator(model::Model, var::String)
@@ -68,4 +68,46 @@ function create_primal_dual(cobra::Tiger.CobraModel)
     return model
 end
 
-model = create_primal_dual(cobra)
+function find_conditional_media(cobra::Tiger.CobraModel, ko; min_wt_growth=0.9, max_ko_growth=0.0)
+    model = create_primal_dual(cobra)
+    v_ko = variable_by_name.(model, cobra.rxns)
+    set_upper_bound(variable_by_name(model, ko), 0.0)
+    vars_ko = variable_by_name.(model, cobra.vars)
+    set_name.(vars_ko, name.(vars_ko) .* "__KO")
+
+    # add the WT condition
+    build_base_model(cobra; model)
+    v_wt = variable_by_name.(model, cobra.rxns)
+    vars_wt = variable_by_name.(model, cobra.vars)
+    set_name.(vars_wt, name.(vars_wt) .* "__WT")
+
+    ex_names = get_exchange_rxns(cobra)
+    ex_wt = variable_by_name.(model, ex_names .* "__WT")
+    ex_ko = variable_by_name.(model, ex_names .* "__KO")
+    n = length(ex_names)
+    @variable(model, Iex[1:n], binary=true)
+    set_name.(Iex, "I__" .* ex_names)
+    for i = 1:n
+        # remove this loop using index notation?
+        @constraint(model, Iex[i] => {ex_wt[i] == 0.0})
+        @constraint(model, Iex[i] => {ex_ko[i] == 0.0})
+    end
+
+    @constraint(model, cobra.c'*vars_wt >= min_wt_growth)
+    @constraint(model, cobra.c'*vars_ko <= max_ko_growth)
+
+    @objective(model, Max, sum(Iex))
+
+    # add WT condition
+    # add KO condition with strong duality
+    # constraint WT to grow
+    # constraint KO to not grow
+    # set activity to zero for KO gene
+    # add indicators to exchanges
+    # set objective to minimize media
+
+    return model
+
+end
+
+model = find_conditional_media(cobra, "g4")

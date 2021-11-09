@@ -294,7 +294,7 @@ function expand_cobra(cobra; ncons=0, nvars=0, vars=nothing)
 end
 
 """
-    build_base_model(cobra::CobraModel, optimizer=Gurobi.Optimizer)
+    build_base_model(cobra::CobraModel, optimizer=Gurobi.Optimizer, model=nothing)
 
 Convert a CobraModel object into a JuMP model.
 
@@ -303,16 +303,22 @@ Adds variables for each reaction and defines the problem
     s.t.
         S*v <|=|> b
         lb <= v <= ub
+
+If model=nothing, a new model is created; otherwise the constraints are added to
+the existing model.
 """
-function build_base_model(cobra::CobraModel, optimizer=Gurobi.Optimizer)
-    model = Model(optimizer)
+function build_base_model(cobra::CobraModel; optimizer=Gurobi.Optimizer, model=nothing)
+    if isnothing(model)
+        model = Model(optimizer)
+    end
 
     nv = length(cobra.lb)
 
-    @variable(model, cobra.lb[i] <= v[i = 1:nv] <= cobra.ub[i])
-    for (i, var) in enumerate(all_variables(model))
-        set_name(var, cobra.vars[i])
-    end
+    #v = @variable(model, cobra.lb[i] <= [i = 1:nv] <= cobra.ub[i])
+    v = @variable(model, [1:nv])
+    set_name.(v, cobra.vars)
+    set_lower_bound.(v, cobra.lb)
+    set_upper_bound.(v, cobra.ub)
 
     sense = cobra.csense .== '<'
     if any(sense)
