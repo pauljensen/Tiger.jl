@@ -2,15 +2,17 @@
 using Revise
 
 using Tiger
-using JuMP
+using JuMP, Gurobi
 
 # =================== TESTING ===================
 
-cobra = read_cobra("/Users/jensen/Dropbox/research/tiger.jl/Tiger/test/cobra_extended.mat", "cobra")
-cobra = extend_cobra_cnf(cobra, ub=1.0)
-model = build_base_model(cobra)
-optimize!(model)
-fitness = single_deletions(model, variable_by_name.(model, cobra.genes))
+#cobra = read_cobra("/Users/jensen/Dropbox/research/tiger.jl/Tiger/test/cobra_extended.mat", "cobra")
+
+cobra = read_cobra("/Users/jensen/Dropbox/research/tiger.jl/Tiger/test/cobra_small.mat", "cobra")
+#cobra = extend_cobra_cnf(cobra, ub=1.0)
+#model = build_base_model(cobra)
+#optimize!(model)
+#fitness = single_deletions(model, variable_by_name.(model, cobra.genes))
 
 function get_exchange_rxns(cobra::Tiger.CobraModel)
     cobra.rxns[(sum(abs.(cobra.S[:,1:length(cobra.rxns)]),dims=1)  .== 1)[:]]
@@ -27,7 +29,7 @@ function add_indicator(model::Model, var::String)
     add_indicator(model, variable_by_name(model, var))
 end
 
-function create_primal_dual(cobra::Tiger.CobraModel)
+function create_primal_dual(cobra::Tiger.CobraModel; bound_vars::Vector{String}=[])
     c = cobra.c
     lb = cobra.lb
     ub = cobra.ub
@@ -58,18 +60,39 @@ function create_primal_dual(cobra::Tiger.CobraModel)
     @variable(model, 0 <= muU[1:n])
     @variable(model, 0 <= muL[1:n])
 
+    # z = muU .* ub
+    @variable(model, 0 <= z[1:n])
+
     @constraint(model, Aeq'*lambda + A'*mu - muL + muU .== c)
 
     # strict duality
-    @constraint(model, c[1:n]'*x[1:n] == lambda'*beq + mu'*b - muL'*lb + muU'*ub)
+    @constraint(model, c[1:n]'*x[1:n] == lambda'*beq + mu'*b - muL'*lb + z'*ub)
+
+    # bounding constraints
+    nbound = length(bound_vars)
+    @variable(model, Inds[1:nbound], binary=true)
+    set_name.(Inds, "I__" .* bound_vars)
+
+    for i = 1:n
+        if name(x[i]) in bound_vars
+            Ind = variable_by_name(model, "I__" * name(x[i]))
+            @constraint(model, z[i] == muU[i])
+            @constraint(model, !Ind => {muU[i] == 0.0})
+            @constraint(model, !Ind => {z[i] == 0.0})
+            @constraint(model, !Ind => {x[i] <= 0.0})
+        else
+            @constraint(model, z[i] == muU[i])
+        end
+    end
 
     @objective(model, Max, 0)
 
-    return model
+    return model, Inds
 end
 
-function find_conditional_media(cobra::Tiger.CobraModel, ko; min_wt_growth=0.9, max_ko_growth=0.0)
-    model = create_primal_dual(cobra)
+function find_conditional_media(cobra::Tiger.CobraModel, ko; min_wt_growth=1.0, max_ko_growth=0.0)
+    ex_names = get_exchange_rxns(cobra)
+    model, Iex = create_primal_dual(cobra, bound_vars=ex_names)
     v_ko = variable_by_name.(model, cobra.rxns)
     set_upper_bound(variable_by_name(model, ko), 0.0)
     vars_ko = variable_by_name.(model, cobra.vars)
@@ -80,23 +103,15 @@ function find_conditional_media(cobra::Tiger.CobraModel, ko; min_wt_growth=0.9, 
     v_wt = variable_by_name.(model, cobra.rxns)
     vars_wt = variable_by_name.(model, cobra.vars)
     set_name.(vars_wt, name.(vars_wt) .* "__WT")
-
-    ex_names = get_exchange_rxns(cobra)
     ex_wt = variable_by_name.(model, ex_names .* "__WT")
-    ex_ko = variable_by_name.(model, ex_names .* "__KO")
-    n = length(ex_names)
-    @variable(model, Iex[1:n], binary=true)
-    set_name.(Iex, "I__" .* ex_names)
-    for i = 1:n
-        # remove this loop using index notation?
-        @constraint(model, Iex[i] => {ex_wt[i] == 0.0})
-        @constraint(model, Iex[i] => {ex_ko[i] == 0.0})
+    for i = 1:length(ex_wt)
+        @constraint(model, !Iex[i] => {ex_wt[i] <= 0.0})
     end
 
     @constraint(model, cobra.c'*vars_wt >= min_wt_growth)
     @constraint(model, cobra.c'*vars_ko <= max_ko_growth)
 
-    @objective(model, Max, sum(Iex))
+    @objective(model, Min, sum(Iex))
 
     # add WT condition
     # add KO condition with strong duality
@@ -110,4 +125,70 @@ function find_conditional_media(cobra::Tiger.CobraModel, ko; min_wt_growth=0.9, 
 
 end
 
-model = find_conditional_media(cobra, "g4")
+function find_conditional_media_rxns(cobra::Tiger.CobraModel, ko; min_wt_growth=1.0, max_ko_growth=0.0)
+    # we're assume a non-extended Cobra model, so only Sv=0 constraints
+
+    m, n = size(cobra.S)
+
+    # add WT condition
+    model = Model(Gurobi.Optimizer)
+    v_wt = @variable(model, [1:n])
+    set_name.(v_wt, cobra.rxns .* "_WT")
+    set_lower_bound.(v_wt, cobra.lb)
+    set_upper_bound.(v_wt, cobra.ub)
+    @constraint(model, cobra.S * v_wt .== cobra.b)
+
+    # add KO condition with strong duality
+    v_ko = @variable(model, [1:n])
+    set_name.(v_ko, cobra.rxns .* "_KO")
+    set_lower_bound.(v_ko, cobra.lb)
+    set_upper_bound.(v_ko, cobra.ub)
+    @constraint(model, cobra.S * v_ko .== cobra.b)
+
+    @variable(model, lambda[1:m])
+    @variable(model, muU[1:n] >= 0)
+    @variable(model, muL[1:n] >= 0)
+
+    @constraint(model, cobra.S'*lambda - muL + muU .== cobra.c)
+
+    @variable(model, I[1:n], binary=true)
+    for i = 1:n
+        if name(v_wt[i]) != ko * "_WT"
+            @constraint(model, !I[i] => {v_wt[i] == 0.0})
+            @constraint(model, !I[i] => {v_ko[i] == 0.0})
+        end
+    end
+    # #@constraint(model, v_wt .<= cobra.ub .* I)
+    # #@constraint(model, v_ko .<= cobra.ub .* I)
+
+    # #@variable(model, z[1:n])
+    for i = 1:n
+        #@constraint(model, z[i] == muU[i])
+        if cobra.c[i] == 0
+            @constraint(model, I[i] => {muU[i] == 0.0})
+            @constraint(model, I[i] => {muL[i] == 0.0})
+        end
+    end
+
+    # strong duality
+    @constraint(model, lambda'*cobra.b - muL'*(cobra.lb.*I) + muU'*(cobra.ub.*I) == cobra.c'*v_ko)
+
+    # knockout KO variable
+    set_upper_bound(variable_by_name(model, ko * "_KO"), 0.0)
+    set_lower_bound(variable_by_name(model, ko * "_KO"), 0.0)
+
+    # constraint WT to grow
+    @constraint(model, cobra.c' * v_wt >= min_wt_growth)
+
+    # constraint KO to not grow
+    @constraint(model, cobra.c' * v_ko <= max_ko_growth)
+
+    @objective(model, Min, sum(I))
+
+    return model
+
+end
+
+#model = find_conditional_media(cobra, "g6")
+model = find_conditional_media_rxns(cobra, "r4")
+optimize!(model)
