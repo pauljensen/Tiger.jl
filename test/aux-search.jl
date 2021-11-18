@@ -11,9 +11,11 @@ import Base.convert
 
 
 function get_exchange_rxns(cobra::Tiger.CobraModel; objective=true)
+    # Extending a CobraModel, e.g. by adding genes via CNF, adds columns to the S matrix.
+    # We only want to search in the original variables at indices 1:length(cobra.rxns).
     ex_idx = (sum(abs.(cobra.S[:,1:length(cobra.rxns)]),dims=1)  .== 1)[:]
     if !objective
-        ex_idx .&= abs.(cobra.c) .== 0.0
+        ex_idx .&= abs.(cobra.c[1:length(cobra.rxns)]) .== 0.0
     end
     cobra.rxns[ex_idx]
 end
@@ -240,8 +242,6 @@ function find_conditional_media(cobra::Tiger.CobraModel, ko; min_wt_growth=1.0, 
 end
 
 function find_conditional_media_ex(cobra::Tiger.CobraModel, ko; min_wt_growth=1.0, max_ko_growth=0.0)
-    gene_names = cobra.genes
-
     lp = StandardLP(cobra)
     n = length(lp.vars)
 
@@ -252,7 +252,7 @@ function find_conditional_media_ex(cobra::Tiger.CobraModel, ko; min_wt_growth=1.
     set_name.(v_wt, lp.vars .* "_WT")
     set_lower_bound.(v_wt, lp.lb)
     set_upper_bound.(v_wt, lp.ub)
-    #@constraint(model, lp.A * v_wt .<= lp.b)
+    @constraint(model, lp.A * v_wt .<= lp.b)
     @constraint(model, lp.Aeq * v_wt .== lp.beq)
 
     # add KO condition with primal-dual expansion
@@ -265,49 +265,35 @@ function find_conditional_media_ex(cobra::Tiger.CobraModel, ko; min_wt_growth=1.
     set_name.(v_ko, lp.vars .* "_KO")
     set_lower_bound.(v_ko, ko_lb)
     set_upper_bound.(v_ko, ko_ub)
-    #@constraint(model, lp.A * v_ko .<= lp.b)
+    @constraint(model, lp.A * v_ko .<= lp.b)
     @constraint(model, lp.Aeq * v_ko .== lp.beq)
 
     @variable(model, lambda[1:size(lp.Aeq,1)])
-    #@variable(model, mu[1:size(lp.A,1)] >= 0)
+    @variable(model, mu[1:size(lp.A,1)] >= 0)
     @variable(model, muU[1:n] >= 0)
     @variable(model, muL[1:n] >= 0)
 
     @variable(model, I[1:n], binary=true)
     ex_names = get_exchange_rxns(cobra, objective=false)
     Ie = [x in ex_names for x in lp.vars]
-    fix.(I[.!Ie], 1)
 
-    #@constraint(model, lp.Aeq'*lambda + lp.A'*mu - muL + muU .== lp.sense*lp.c)
-    @constraint(model, lp.Aeq'*lambda - muL + muU .== -lp.sense*lp.c)
+    gene_names = cobra.genes
+    Ig = [x in gene_names for x in lp.vars]
+
+    fix.(I[.!(Ie .| Ig)], 1)
+
+    @constraint(model, lp.Aeq'*lambda + lp.A'*mu - muL + muU .== -lp.sense*lp.c)
 
     @constraint(model, v_wt[Ie] .<= lp.ub[Ie].*I[Ie])
     @constraint(model, v_ko[Ie] .<= ko_ub[Ie].*I[Ie])
+    @constraint(model, v_wt[Ig] .<= lp.ub[Ig].*I[Ig])
+    @constraint(model, v_ko[Ig] .<= ko_ub[Ig].*I[Ig])
     #@constraint(model, muI[Ie] .<= M*(1 .- I[Ie]))
-    # for (i, ex) in enumerate(ex_names)
-    #     # bind all variable except the KO variable
-    #     if ex != ko
-    #         j = findfirst(ex .== lp.vars)
-    #         @constraint(model, !I[j] => {v_wt[j] == 0.0})
-    #         @constraint(model, !I[j] => {v_ko[j] == 0.0})
-    #     end
-
-    #     # transfer switching constraint to the dual except for
-    #     # any reaction in the primal's objective function
-    #     if lp.c[j] == 0
-    #         if lp.ub[i] > 0
-    #             @constraint(model, I[j] => {muU[j] == 0.0})
-    #         end
-    #         if lp.lb[i] < 0
-    #             @constraint(model, I[j] => {muL[j] == 0.0})
-    #         end
-    #     end
-    # end
 
     # strong duality
     
     #@constraint(model, lambda'*lp.beq - muL[.!i]'*lp.lb[.!i] + muU[.!i]'*lp.ub[.!i] - muL[i]'*(lp.lb[i] .* I[i]) + muU[i]'*(lp.ub[i] .* I[i]) == -lp.sense*lp.c'*v_ko)
-    @constraint(model, lambda'*lp.beq - muL'*ko_lb + muU'*(ko_ub.*I) == -lp.sense*lp.c'*v_ko)
+    @constraint(model, lambda'*lp.beq + mu'*lp.b - muL'*ko_lb + muU'*(ko_ub.*I) == -lp.sense*lp.c'*v_ko)
 
     # constraint WT to grow
     @constraint(model, lp.c' * v_wt >= min_wt_growth)
@@ -315,7 +301,7 @@ function find_conditional_media_ex(cobra::Tiger.CobraModel, ko; min_wt_growth=1.
     # constraint KO to not grow
     @constraint(model, lp.c' * v_ko <= max_ko_growth)
 
-    @objective(model, Min, sum(I[Ie]))
+    @objective(model, Max, sum(I[Ig]) - sum(I[Ie]))
 
     return model
 end
@@ -387,16 +373,17 @@ end
 # =================== TESTING ===================
 
 
-cobra = read_cobra("/Users/jensen/Dropbox/research/tiger.jl/Tiger/test/cobra_extended.mat", "cobra")
+cobra = read_cobra("/Users/jensen/Dropbox/research/tiger.jl/Tiger/test/cobra_or.mat", "cobra")
 #cobra = read_cobra("/Users/jensen/Dropbox/research/tiger.jl/Tiger/test/cobra_small.mat", "cobra")
 
-model = find_conditional_media_ex(cobra, "r5", min_wt_growth=0.1)
+cobra = extend_cobra_cnf(cobra, ub=1.0)
+model = find_conditional_media_ex(cobra, "g6a", min_wt_growth=0.1)
 optimize!(model)
 
 # cobra.ub[9] = 0.1
 # cobra.ub[[8 10]] .= 0.0
 
-# #cobra = extend_cobra_cnf(cobra, ub=1.0)
+
 # #model = build_base_model(cobra)
 # #optimize!(model)
 # #fitness = single_deletions(model, variable_by_name.(model, cobra.genes))
