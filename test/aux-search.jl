@@ -9,17 +9,6 @@ using SparseArrays
 
 import Base.convert
 
-
-function get_exchange_rxns(cobra::Tiger.CobraModel; objective=true)
-    # Extending a CobraModel, e.g. by adding genes via CNF, adds columns to the S matrix.
-    # We only want to search in the original variables at indices 1:length(cobra.rxns).
-    ex_idx = (sum(abs.(cobra.S[:,1:length(cobra.rxns)]),dims=1)  .== 1)[:]
-    if !objective
-        ex_idx .&= abs.(cobra.c[1:length(cobra.rxns)]) .== 0.0
-    end
-    cobra.rxns[ex_idx]
-end
-
 indicator_name(varname) = "I__" * varname
 function add_indicator(model::Model, var::VariableRef)
     ind = @variable(model, base_name=indicator_name(name(var)), binary=true)
@@ -90,86 +79,6 @@ function create_primal_dual(cobra::Tiger.CobraModel; bound_vars::Vector{String}=
     @objective(model, Max, 0)
 
     return model, Inds
-end
-
-struct StandardLP
-    # min sense * c'x
-    # s.t.  Ax <= b
-    #       Aeq x == beq
-    #       lb <= x <= ub
-    sense::Integer
-
-    c::Vector{Real}
-
-    A::SparseMatrixCSC{Float64,Int}
-    b::Vector{Real}
-
-    Aeq::SparseMatrixCSC{Float64,Int}
-    beq::Vector{Real}
-
-    lb::Vector{Real}
-    ub::Vector{Real}
-
-    vars::Vector{String}
-end
-
-function build_base_model(lp::StandardLP; optimizer=Gurobi.Optimizer, model=nothing)
-    if isnothing(model)
-        model = Model(optimizer)
-    end
-
-    n = length(lp.vars)
-    x = @variable(model, [1:n])
-    set_lower_bound.(x, lp.lb)
-    set_upper_bound.(x, lp.ub)
-
-    @constraint(model, lp.A*x .<= lp.b)
-    @constraint(model, lp.Aeq*x .== lp.beq)
-
-    if lp.sense == 1
-        @objective(model, Min, lp.c'*x)
-    else
-        @objective(model, Max, lp.c'*x)
-    end
-
-    return model
-end
-
-
-function StandardLP(cobra::Tiger.CobraModel)
-    cobra = deepcopy(cobra)
-    sense = -1  # Cobra models maximize by default
-    c = cobra.c
-    lb = cobra.lb
-    ub = cobra.ub
-    n = size(cobra.S,2)
-
-    ieq = cobra.csense .== '='
-    Aeq = cobra.S[ieq,:]
-    beq = cobra.b[ieq]
-    
-    leq = cobra.csense .== '<'
-    Ale = cobra.S[leq,:]
-    ble = cobra.b[leq]
-
-    geq = cobra.csense .== '>'
-    Age = cobra.S[geq,:]
-    bge = cobra.b[geq]
-
-    A = [Ale; -Age]
-    b = [ble; -bge]
-
-    StandardLP(
-        sense,
-        c,
-        A,
-        b,
-        Aeq,
-        beq,
-        lb,
-        ub,
-        cobra.vars
-    )
 end
 
 function find_conditional_media(cobra::Tiger.CobraModel, ko; min_wt_growth=1.0, max_ko_growth=0.0, exchanges=nothing, max_kos=0, optimize=true)
@@ -253,9 +162,10 @@ function find_conditional_media(cobra::Tiger.CobraModel, ko; min_wt_growth=1.0, 
         media = nothing
         kos = nothing
     else
+        set_optimizer_attribute(model, "IntegralityFocus", 1)
         optimize!(model)
-        media = exchanges[value.(I[Ie]) .≈ 1.0]
-        kos = gene_names[value.(I[Ig]) .≈ 0.0]
+        media = exchanges[isapprox.(value.(I[Ie]), 1.0, atol=1e-4)]
+        kos = gene_names[isapprox.(value.(I[Ig]), 0.0, atol=1e-4)]
     end
 
     return model, media, kos
@@ -289,5 +199,5 @@ cobra.lb[cobra.lb .< -1000] .= -1000
 
 optimize!(build_base_model(StandardLP(cobra)))
 
-model, media, kos = find_conditional_media(cobra, "SMU_308", min_wt_growth=0.3, exchanges=ingredients)
+model, media, kos = find_conditional_media(cobra, "SMU_308", min_wt_growth=0.1, exchanges=ingredients)
 #optimize!(model)

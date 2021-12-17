@@ -15,7 +15,10 @@ export parse_boolean,
        set_media_bounds!,
        add_gprs_cnf!,
        single_deletions,
-       extend_cobra_cnf
+       extend_cobra_cnf,
+       get_exchange_reactions,
+       StandardLP,
+       build_base_model
 
 abstract type Boolean end
 abstract type Junction <: Boolean end
@@ -506,5 +509,94 @@ function single_deletions(model::Model, vars=all_variables(model))
     return objval, status
 end
 
+struct StandardLP
+    # min sense * c'x
+    # s.t.  Ax <= b
+    #       Aeq x == beq
+    #       lb <= x <= ub
+    sense::Integer
+
+    c::Vector{Real}
+
+    A::SparseMatrixCSC{Float64,Int}
+    b::Vector{Real}
+
+    Aeq::SparseMatrixCSC{Float64,Int}
+    beq::Vector{Real}
+
+    lb::Vector{Real}
+    ub::Vector{Real}
+
+    vars::Vector{String}
+end
+
+function build_base_model(lp::StandardLP; optimizer=Gurobi.Optimizer, model=nothing)
+    if isnothing(model)
+        model = Model(optimizer)
+    end
+
+    n = length(lp.vars)
+    x = @variable(model, [1:n])
+    set_lower_bound.(x, lp.lb)
+    set_upper_bound.(x, lp.ub)
+
+    @constraint(model, lp.A*x .<= lp.b)
+    @constraint(model, lp.Aeq*x .== lp.beq)
+
+    if lp.sense == 1
+        @objective(model, Min, lp.c'*x)
+    else
+        @objective(model, Max, lp.c'*x)
+    end
+
+    return model
+end
+
+
+function StandardLP(cobra::Tiger.CobraModel)
+    cobra = deepcopy(cobra)
+    sense = -1  # Cobra models maximize by default
+    c = cobra.c
+    lb = cobra.lb
+    ub = cobra.ub
+    n = size(cobra.S,2)
+
+    ieq = cobra.csense .== '='
+    Aeq = cobra.S[ieq,:]
+    beq = cobra.b[ieq]
+    
+    leq = cobra.csense .== '<'
+    Ale = cobra.S[leq,:]
+    ble = cobra.b[leq]
+
+    geq = cobra.csense .== '>'
+    Age = cobra.S[geq,:]
+    bge = cobra.b[geq]
+
+    A = [Ale; -Age]
+    b = [ble; -bge]
+
+    StandardLP(
+        sense,
+        c,
+        A,
+        b,
+        Aeq,
+        beq,
+        lb,
+        ub,
+        cobra.vars
+    )
+end
+
+function get_exchange_rxns(cobra::Tiger.CobraModel; objective=true)
+    # Extending a CobraModel, e.g. by adding genes via CNF, adds columns to the S matrix.
+    # We only want to search in the original variables at indices 1:length(cobra.rxns).
+    ex_idx = (sum(abs.(cobra.S[:,1:length(cobra.rxns)]),dims=1)  .== 1)[:]
+    if !objective
+        ex_idx .&= abs.(cobra.c[1:length(cobra.rxns)]) .== 0.0
+    end
+    cobra.rxns[ex_idx]
+end
 
 end  # module
