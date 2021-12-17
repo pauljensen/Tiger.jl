@@ -16,7 +16,7 @@ export parse_boolean,
        add_gprs_cnf!,
        single_deletions,
        extend_cobra_cnf,
-       get_exhcange_rxns,
+       get_exchange_rxns,
        StandardLP,
        build_base_model
 
