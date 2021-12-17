@@ -434,8 +434,25 @@ function set_media_bounds!(model::Model, media::Dict{String, Any}; set_defaults=
     end
 end
 
+function set_media_bounds!(model::CobraModel, media::Dict{String, Any}; set_defaults=true)
+    exchanges = get_exchange_rxns(model)
+    for (i,rxn) in enumerate(model.rxns)
+        if !(rxn in exchanges || haskey(media["reactions"], rxn))
+            continue
+        end
+
+        if haskey(media["reactions"], rxn)
+            model.lb[i] = media["reactions"][rxn][1]
+            model.ub[i] = media["reactions"][rxn][2]
+        elseif set_defaults
+            model.lb[i] = media["default_exchange_bounds"][1]
+            model.ub[i] = media["default_exchange_bounds"][2]
+        end
+    end
+end
+
 """
-    set_media_bounds!(model::Model, filename::AbstractString; set_defaults=true)
+    set_media_bounds!(model, filename::AbstractString; set_defaults=true)
 
 Set exchange bounds using values in a TOML file.
 
@@ -443,7 +460,7 @@ See `./test/SampleMedia.toml` for a description of the media file format.
 The media file can also be read using `read_media_file`. The resulting Dict
 can be passed instead of the filename.
 """
-function set_media_bounds!(model::Model, filename::AbstractString; set_defaults=true)
+function set_media_bounds!(model, filename::AbstractString; set_defaults=true)
     set_media_bounds!(model, read_media_file(filename); set_defaults)
 end
 
