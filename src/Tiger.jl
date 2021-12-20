@@ -460,7 +460,7 @@ See `./test/SampleMedia.toml` for a description of the media file format.
 The media file can also be read using `read_media_file`. The resulting Dict
 can be passed instead of the filename.
 """
-function set_media_bounds!(model, filename::AbstractString; set_defaults=true)
+function set_media_bounds!(model::Union{Model,CobraModel}, filename::AbstractString; set_defaults=true)
     set_media_bounds!(model, read_media_file(filename); set_defaults)
 end
 
